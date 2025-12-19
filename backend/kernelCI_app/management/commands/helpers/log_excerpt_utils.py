@@ -48,9 +48,10 @@ def upload_logexcerpt(logexcerpt: str, id: str) -> str:
         hdr = {
             "Authorization": f"Bearer {STORAGE_TOKEN}",
         }
-        files = {"file0": ("logexcerpt.txt.gz", f), "path": f"logexcerpt/{id}"}
+        files = {"file0": ("logexcerpt.txt.gz", f)}
+        data = {"path": f"logexcerpt/{id}"}
         try:
-            r = requests.post(UPLOAD_URL, headers=hdr, files=files)
+            r = requests.post(UPLOAD_URL, headers=hdr, files=files, data=data)
         except Exception as e:
             logger.error("Error uploading logexcerpt for %s: %s", id, e)
             os.remove(logexcerpt_filename)
