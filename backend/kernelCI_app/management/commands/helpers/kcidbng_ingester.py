@@ -89,6 +89,21 @@ def standardize_tree_names(
                 checkout["tree_name"] = correct_tree
 
 
+def normalize_nullable_log_excerpt(input_data: dict[str, Any]) -> None:
+    """
+    KCIDB schema requires `log_excerpt` to be a string if present.
+    Upstream can emit `null`, which breaks schema validation.
+    """
+    for key in ("builds", "tests"):
+        items = input_data.get(key) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("log_excerpt") is None:
+                if "log_excerpt" in item:
+                    item["log_excerpt"] = ""
+
+
 def prepare_file_data(
     file: SubmissionFileMetadata, tree_names: dict[str, str]
 ) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
@@ -114,6 +129,8 @@ def prepare_file_data(
     try:
         with open(file["path"], "r") as f:
             data = json.loads(f.read())
+
+        normalize_nullable_log_excerpt(data)
 
         # These operations can be done in parallel (especially extract_log_excerpt)
         if CONVERT_LOG_EXCERPT:

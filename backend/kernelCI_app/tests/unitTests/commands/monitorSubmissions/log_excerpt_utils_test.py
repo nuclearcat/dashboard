@@ -384,7 +384,26 @@ class TestExtractLogExcerpt:
         extract_log_excerpt(SUBMISSION_MOCK)
 
         mock_logger.warning.assert_called_once_with(
-            "STORAGE_TOKEN is not set, log_excerpts will not be uploaded"
+            "STORAGE_TOKEN or STORAGE_BASE_URL is not set, "
+            "log_excerpts will not be uploaded"
+        )
+
+    @patch(
+        "kernelCI_app.management.commands.helpers.log_excerpt_utils.STORAGE_TOKEN",
+        STORAGE_TOKEN_MOCK,
+    )
+    @patch(
+        "kernelCI_app.management.commands.helpers.log_excerpt_utils.STORAGE_BASE_URL",
+        None,
+    )
+    @patch("kernelCI_app.management.commands.helpers.log_excerpt_utils.logger")
+    def test_extract_log_excerpt_no_storage_base_url(self, mock_logger):
+        """Test extract_log_excerpt without storage base url."""
+        extract_log_excerpt(SUBMISSION_MOCK)
+
+        mock_logger.warning.assert_called_once_with(
+            "STORAGE_TOKEN or STORAGE_BASE_URL is not set, "
+            "log_excerpts will not be uploaded"
         )
 
     @patch(

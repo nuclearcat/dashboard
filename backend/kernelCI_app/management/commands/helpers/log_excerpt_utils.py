@@ -33,6 +33,9 @@ def upload_logexcerpt(logexcerpt: str, id: str) -> str:
     Returns:
         str: On success upload: the reference url. On failed upload: the original logexcerpt
     """
+    if not STORAGE_BASE_URL:
+        logger.warning("STORAGE_BASE_URL is not set, log_excerpts will not be uploaded")
+        return logexcerpt
     if VERBOSE:
         logger.info("Uploading logexcerpt for %s to %s", id, UPLOAD_URL)
     # make temporary file with logexcerpt data
@@ -146,8 +149,11 @@ def extract_log_excerpt(input_data: dict[str, Any]) -> None:
     Extract log_excerpt from builds and tests, if it is large,
     upload to storage and replace with a reference.
     """
-    if not STORAGE_TOKEN:
-        logger.warning("STORAGE_TOKEN is not set, log_excerpts will not be uploaded")
+    if not STORAGE_TOKEN or not STORAGE_BASE_URL:
+        logger.warning(
+            "STORAGE_TOKEN or STORAGE_BASE_URL is not set, "
+            "log_excerpts will not be uploaded"
+        )
         return
 
     builds: list[dict[str, Any]] = input_data.get("builds", [])

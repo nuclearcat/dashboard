@@ -211,6 +211,42 @@ class TestPrepareFileData:
         mock_logger.error.assert_called()
         mock_file_open.assert_called_once()
 
+    @patch(
+        "kernelCI_app.management.commands.helpers.kcidbng_ingester.CONVERT_LOG_EXCERPT",
+        False,
+    )
+    @patch("kernelCI_app.management.commands.helpers.kcidbng_ingester.VERBOSE", False)
+    @patch("kcidb_io.schema.V5_3.validate")
+    @patch("kcidb_io.schema.V5_3.upgrade")
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data='{"builds":[{"id":"b1","log_excerpt":null}],"tests":[{"id":"t1","log_excerpt":null}]}',
+    )
+    def test_prepare_file_data_coerces_null_log_excerpt(
+        self,
+        mock_file_open,
+        mock_upgrade,
+        mock_validate,
+    ):
+        mock_file = SubmissionFileMetadata(
+            name=SUBMISSION_FILENAME_MOCK,
+            path=SUBMISSION_PATH_MOCK,
+            size=100,
+        )
+
+        result_data, result_metadata = prepare_file_data(mock_file, tree_names={})
+
+        assert result_metadata["fsize"] == 100
+        assert result_data["builds"][0]["log_excerpt"] == ""
+        assert result_data["tests"][0]["log_excerpt"] == ""
+
+        validated = mock_validate.call_args.args[0]
+        assert validated["builds"][0]["log_excerpt"] == ""
+        assert validated["tests"][0]["log_excerpt"] == ""
+        mock_upgrade.assert_called_once()
+        mock_file_open.assert_called_once_with(SUBMISSION_PATH_MOCK, "r")
+
 
 class TestConsumeBuffer:
     """Test cases for consume_buffer function."""
