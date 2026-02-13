@@ -1,0 +1,76 @@
+volumes:
+    backend-data:
+    runtime-data:
+    static-data:
+    dashboard-db-data:
+
+networks:
+    public:
+    private:
+
+services:
+    # Cloud SQL proxy integration was removed from this next-generation compose stack.
+    # Use DB_DEFAULT_HOST (default here is dashboard_db) to target your active DB path.
+    dashboard_db:
+        image: postgres:17
+        env_file:
+            - .env.db
+        volumes:
+            - dashboard-db-data:/var/lib/postgresql/data
+        networks:
+            - private
+        ports:
+            - "5434:5432"
+
+    redis:
+        image: redis:8.0-M04-alpine
+        restart: always
+        networks:
+            - private
+        ports:
+            - 6379:6379
+
+    backend:
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER}/${IMAGE_REPOSITORY}/dashboard-backend:${IMAGE_TAG}
+        volumes:
+            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+        restart: always
+        networks:
+            - private
+            - public
+        ports:
+            - target: 8000
+              published: 8000
+              protocol: tcp
+            - target: 8001
+              published: 8001
+              protocol: tcp
+        depends_on:
+            - redis
+            - dashboard_db
+        env_file:
+            - .env.backend
+        environment:
+            DB_DEFAULT_HOST: ${DB_DEFAULT_HOST:-dashboard_db}
+
+    dashboard:
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER}/${IMAGE_REPOSITORY}/dashboard-frontend:${IMAGE_TAG}
+        volumes:
+            - static-data:/data/static
+
+    proxy:
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_OWNER}/${IMAGE_REPOSITORY}/dashboard-proxy:${IMAGE_TAG}
+        restart: always
+        depends_on:
+            - backend
+            - dashboard
+        networks:
+            - public
+        volumes:
+            - static-data:/data/static
+        ports:
+            - target: 80
+              published: 80
+              protocol: tcp
+        env_file:
+            - .env.proxy

@@ -1,0 +1,93 @@
+name: Build dashboard containers
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_owner:
+        description: 'Image owner/org in GHCR'
+        required: false
+        default: ''
+      image_repository:
+        description: 'Image repository in GHCR'
+        required: false
+        default: ''
+      image_tag:
+        description: 'Tag to publish (optional, defaults to commit SHA)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-containers:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REGISTRY: ghcr.io
+      IMAGE_OWNER: ${{ github.repository_owner }}
+      IMAGE_REPOSITORY: ${{ github.event.repository.name }}
+      COMPOSE_PROJECT_NAME: dashboard
+      BACKEND_VOLUME_DIR: /volume_data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute GHCR image metadata
+        id: image-meta
+        run: |
+          REPO_OWNER_LC="${{ github.event.inputs.image_owner }}"
+          REPO_NAME_LC="${{ github.event.inputs.image_repository }}"
+          if [ -z "${REPO_OWNER_LC}" ]; then
+            REPO_OWNER_LC="${IMAGE_OWNER,,}"
+          fi
+          if [ -z "${REPO_NAME_LC}" ]; then
+            REPO_NAME_LC="${IMAGE_REPOSITORY,,}"
+          fi
+          echo "prefix=${IMAGE_REGISTRY}/${REPO_OWNER_LC}/${REPO_NAME_LC}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build images from docker-compose recipe
+        run: docker compose -f docker-compose.yml build backend dashboard proxy
+
+      - name: Show built image names
+        run: docker images dashboard_backend dashboard dashboard_proxy
+
+      - name: Push images to GHCR
+        run: |
+          set -euo pipefail
+          PREFIX="${{ steps.image-meta.outputs.prefix }}"
+          TAG_SHA="${{ steps.image-meta.outputs.sha }}"
+          IMAGE_TAG="${{ steps.image-meta.outputs.tag }}"
+
+          docker tag dashboard_backend "${PREFIX}/dashboard-backend:${IMAGE_TAG}"
+          docker tag dashboard_backend "${PREFIX}/dashboard-backend:${TAG_SHA}"
+          docker tag dashboard_backend "${PREFIX}/dashboard-backend:latest"
+          docker push "${PREFIX}/dashboard-backend:${IMAGE_TAG}"
+          docker push "${PREFIX}/dashboard-backend:${TAG_SHA}"
+          docker push "${PREFIX}/dashboard-backend:latest"
+
+          docker tag dashboard "${PREFIX}/dashboard-frontend:${IMAGE_TAG}"
+          docker tag dashboard "${PREFIX}/dashboard-frontend:${TAG_SHA}"
+          docker tag dashboard "${PREFIX}/dashboard-frontend:latest"
+          docker push "${PREFIX}/dashboard-frontend:${IMAGE_TAG}"
+          docker push "${PREFIX}/dashboard-frontend:${TAG_SHA}"
+          docker push "${PREFIX}/dashboard-frontend:latest"
+
+          docker tag dashboard_proxy "${PREFIX}/dashboard-proxy:${IMAGE_TAG}"
+          docker tag dashboard_proxy "${PREFIX}/dashboard-proxy:${TAG_SHA}"
+          docker tag dashboard_proxy "${PREFIX}/dashboard-proxy:latest"
+          docker push "${PREFIX}/dashboard-proxy:${IMAGE_TAG}"
+          docker push "${PREFIX}/dashboard-proxy:${TAG_SHA}"
+          docker push "${PREFIX}/dashboard-proxy:latest"
