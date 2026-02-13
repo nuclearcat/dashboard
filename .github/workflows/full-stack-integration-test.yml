@@ -1,0 +1,207 @@
+name: Full stack integration test
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_owner:
+        description: "Image owner/org in GHCR (defaults to repo owner)"
+        required: false
+        default: ""
+      image_repository:
+        description: "Image repository in GHCR (defaults to current repository)"
+        required: false
+        default: ""
+      image_tag:
+        description: "Image tag to deploy (defaults to commit SHA)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  full-stack-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      IMAGE_REGISTRY: ghcr.io
+      IMAGE_OWNER: ${{ github.event.inputs.image_owner || github.repository_owner }}
+      IMAGE_REPOSITORY: ${{ github.event.inputs.image_repository || github.event.repository.name }}
+      IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+      WORKDIR: /opt/dashboard
+      COMPOSE_FILE: /opt/dashboard/docker-compose-next.yaml
+      POSTGRES_PORT: 5434
+      DASHBOARD_DB: dashboard
+      APP_DB: kcidb
+      DASHBOARD_DB_USER: admin
+      APP_DB_USER: kernelci
+      DB_HOST: dashboard_db
+      DB_PORT: 5432
+      POSTGRES_READY_ATTEMPTS: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare deployment env files
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${WORKDIR}/cicd"
+          cp docker-compose-next.yaml "${WORKDIR}/"
+          cp -r cicd "${WORKDIR}/"
+
+          DB_PASSWORD="$(openssl rand -hex 24)"
+          echo "db_password=${DB_PASSWORD}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "POSTGRES_USER=${DASHBOARD_DB_USER}"
+            echo "POSTGRES_PASSWORD=${DB_PASSWORD}"
+            echo "POSTGRES_DB=${DASHBOARD_DB}"
+          } > "${WORKDIR}/.env.db"
+
+          {
+            echo "ALLOWED_HOSTS=[\"backend\", \"localhost\"]"
+            echo "DJANGO_SECRET_KEY=$(openssl rand -base64 32)"
+            echo "REDIS_HOST=redis"
+            echo "SKIP_CRONJOBS=True"
+            echo ""
+            echo "DEBUG=True"
+            echo "DEBUG_DB_VARS=False"
+            echo "ENABLE_LOGGING=False"
+            echo ""
+            echo "DB_DEFAULT_PASSWORD=${DB_PASSWORD}"
+            echo "DB_DEFAULT_HOST=${DB_HOST}"
+            echo "DB_DEFAULT_USER=${APP_DB_USER}"
+            echo "DB_DEFAULT_NAME=${APP_DB}"
+            echo "DB_DEFAULT_PORT=${DB_PORT}"
+            echo ""
+            echo "DASH_DB_NAME=${DASHBOARD_DB}"
+            echo "DASH_DB_USER=${DASHBOARD_DB_USER}"
+            echo "DASH_DB_PASSWORD=${DB_PASSWORD}"
+            echo "DASH_DB_HOST=${DB_HOST}"
+            echo "DASH_DB_PORT=${DB_PORT}"
+            echo ""
+            echo "USE_DASHBOARD_DB=False"
+          } > "${WORKDIR}/.env.backend"
+
+          {
+            echo "PROXY_TARGET=http://backend:8000"
+          } > "${WORKDIR}/.env.proxy"
+
+      - name: Start dashboard_db and redis
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+          docker compose -f "$COMPOSE_FILE" up -d dashboard_db redis
+
+      - name: Configure PostgreSQL users and databases
+        shell: bash
+        env:
+          DB_PASSWORD: ${{ steps.prepare.outputs.db_password }}
+          DASHBOARD_DB_USER: ${{ env.DASHBOARD_DB_USER }}
+          APP_DB_USER: ${{ env.APP_DB_USER }}
+          DASHBOARD_DB: ${{ env.DASHBOARD_DB }}
+          APP_DB: ${{ env.APP_DB }}
+          COMPOSE_FILE: ${{ env.COMPOSE_FILE }}
+          DB_HOST: ${{ env.DB_HOST }}
+          DB_PORT: ${{ env.DB_PORT }}
+        run: |
+          set -euo pipefail
+
+          cd "$WORKDIR"
+
+          attempts=0
+          until docker compose -f "$COMPOSE_FILE" exec -T dashboard_db \
+            env PGPASSWORD="${DB_PASSWORD}" \
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DASHBOARD_DB_USER" -d postgres -c '\l' >/dev/null 2>&1
+          do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$POSTGRES_READY_ATTEMPTS" ]; then
+              echo "Postgres did not become ready in time."
+              docker compose -f "$COMPOSE_FILE" logs dashboard_db
+              exit 1
+            fi
+            echo "Waiting for Postgres..."
+            sleep 2
+          done
+
+          bash cicd/setup-dashboard-db.sh
+
+      - name: Apply backend DB migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+          docker compose -f "$COMPOSE_FILE" run --rm backend sh -lc "sh ./migrate-app-db.sh"
+
+      - name: Deploy prebuilt dashboard stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+          docker compose -f "$COMPOSE_FILE" up -d dashboard
+          DASHBOARD_CONTAINER_ID="$(docker compose -f "$COMPOSE_FILE" ps -q dashboard)"
+          docker wait "$DASHBOARD_CONTAINER_ID"
+          docker compose -f "$COMPOSE_FILE" up -d backend proxy
+
+      - name: Curl smoke tests (empty dashboard)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS -o /tmp/dashboard.html http://127.0.0.1/; then
+              break
+            fi
+            echo "Waiting for frontend..."
+            sleep 3
+            if [ "$attempt" -eq 30 ]; then
+              echo "Frontend did not become reachable."
+              exit 1
+            fi
+          done
+
+          if ! grep -q "KernelCI Dashboard" /tmp/dashboard.html; then
+            echo "Dashboard HTML marker not found."
+            exit 1
+          fi
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1/api/schema/ -o /tmp/schema.json; then
+              break
+            fi
+            echo "Waiting for backend API..."
+            sleep 3
+            if [ "$attempt" -eq 30 ]; then
+              echo "Backend API did not become reachable."
+              exit 1
+            fi
+          done
+
+          if ! grep -q "\"openapi\":" /tmp/schema.json; then
+            echo "Backend schema endpoint did not return OpenAPI payload."
+            exit 1
+          fi
+
+          if ! grep -q "\"paths\"" /tmp/schema.json; then
+            echo "Backend schema endpoint returned incomplete JSON."
+            exit 1
+          fi
+
+      - name: Tear down stack
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          cd "$WORKDIR"
+          docker compose -f "$COMPOSE_FILE" down --volumes --remove-orphans

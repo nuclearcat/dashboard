@@ -1,3 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+
 poetry run python3 manage.py makemigrations kernelCI_app
 
 if [ "$(echo "${USE_DASHBOARD_DB}" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
